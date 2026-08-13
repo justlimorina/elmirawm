@@ -70,6 +70,11 @@
 #endif
 
 #include "util.h"
+#include "xdg-shell-protocol.h"
+#include "wlr-layer-shell-unstable-v1-protocol.h"
+#include "wlr-output-power-management-unstable-v1-protocol.h"
+#include "cursor-shape-v1-protocol.h"
+#include "pointer-constraints-unstable-v1-protocol.h"
 
 /* macros */
 #define MAX(A, B)               ((A) > (B) ? (A) : (B))
@@ -483,6 +488,9 @@ applyrules(Client *c)
 	int i;
 	const Rule *r;
 	Monitor *mon = selmon, *m;
+
+	/* Floating-first TUYET DOI: default all new windows to floating */
+	c->isfloating = 1;
 
 	appid = client_get_appid(c);
 	title = client_get_title(c);
@@ -1793,6 +1801,27 @@ mapnotify(struct wl_listener *listener, void *data)
 	} else {
 		applyrules(c);
 	}
+
+	/* Smart Placement: Center floating windows on screen, cascade if occupied, never (0,0) */
+	if (c->isfloating && !client_is_unmanaged(c)) {
+		m = c->mon ? c->mon : selmon;
+		if (m && m->w.width > 0 && m->w.height > 0) {
+			int cx = m->w.x + (m->w.width - c->geom.width) / 2;
+			int cy = m->w.y + (m->w.height - c->geom.height) / 2;
+			if (cx < m->w.x) cx = m->w.x + 20;
+			if (cy < m->w.y) cy = m->w.y + 20;
+			wl_list_for_each(w, &clients, link) {
+				if (w != c && w->isfloating && w->geom.x == cx && w->geom.y == cy) {
+					cx += 32;
+					cy += 32;
+				}
+			}
+			c->geom.x = cx;
+			c->geom.y = cy;
+			resize(c, c->geom, 1);
+		}
+	}
+
 	printstatus();
 
 unset_fullscreen:
@@ -2675,7 +2704,7 @@ spawn(const Arg *arg)
 		dup2(STDERR_FILENO, STDOUT_FILENO);
 		setsid();
 		execvp(((char **)arg->v)[0], (char **)arg->v);
-		die("dwl: execvp %s failed:", ((char **)arg->v)[0]);
+		die("elmirawm: execvp %s failed:", ((char **)arg->v)[0]);
 	}
 }
 
@@ -3197,7 +3226,7 @@ main(int argc, char *argv[])
 		else if (c == 'd')
 			log_level = WLR_DEBUG;
 		else if (c == 'v')
-			die("dwl " VERSION);
+			die("elmirawm " VERSION);
 		else
 			goto usage;
 	}

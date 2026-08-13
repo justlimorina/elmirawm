@@ -30,8 +30,8 @@ static const Rule rules[] = {
 /* layout(s) */
 static const Layout layouts[] = {
 	/* symbol     arrange function */
-	{ "[]=",      tile },
-	{ "><>",      NULL },    /* no layout function means floating behavior */
+	{ "><>",      NULL },    /* no layout function means floating behavior (default) */
+	{ "[]=",      tile },    /* tiling fallback option */
 	{ "[M]",      monocle },
 };
 
@@ -132,8 +132,8 @@ static const Key keys[] = {
 	{ MODKEY,                    XKB_KEY_Return,      zoom,             {0} },
 	{ MODKEY,                    XKB_KEY_Tab,         view,             {0} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_c,           killclient,       {0} },
-	{ MODKEY,                    XKB_KEY_t,           setlayout,        {.v = &layouts[0]} },
-	{ MODKEY,                    XKB_KEY_f,           setlayout,        {.v = &layouts[1]} },
+	{ MODKEY,                    XKB_KEY_f,           setlayout,        {.v = &layouts[0]} },
+	{ MODKEY,                    XKB_KEY_t,           setlayout,        {.v = &layouts[1]} },
 	{ MODKEY,                    XKB_KEY_m,           setlayout,        {.v = &layouts[2]} },
 	{ MODKEY,                    XKB_KEY_space,       setlayout,        {0} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_space,       togglefloating,   {0} },

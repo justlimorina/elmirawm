@@ -1,6 +1,21 @@
+# Binaries and build artifacts
+elmirawm
 dwl
 *.o
 *-protocol.c
 *-protocol.h
-.ccls-cache
 config.h
+*.tar.gz
+
+# Cache and build systems
+.cache/
+.ccls-cache/
+compile_commands.json
+.vscode/
+.idea/
+
+# Temp and backup files
+*~
+*.swp
+*.patch
+*.orig

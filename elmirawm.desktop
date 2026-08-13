@@ -1,0 +1,5 @@
+[Desktop Entry]
+Name=Elmira
+Comment=Elmira Window Manager (elmirawm)
+Exec=elmirawm
+Type=Application

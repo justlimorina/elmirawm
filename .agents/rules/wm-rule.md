@@ -80,4 +80,4 @@ Log & Debug: elmirawm phải có hệ thống log phân cấp (DEBUG, INFO, WARN
 
 Touch & Trackpad: Ưu tiên trải nghiệm điều hướng cử chỉ qua libinput (vuốt 3 ngón để đổi workspace, pinch to zoom, cuộn tự nhiên/natural scrolling). Cửa sổ ở chế độ floating phải dễ dàng thao tác bằng màn hình cảm ứng.
 
-LƯU Ý CUỐI CÙNG CHO AI: Bất cứ khi nào người dùng yêu cầu viết tính năng mới, hãy quét lại các bộ quy tắc này. Nếu yêu cầu mâu thuẫn với nguyên tắc "Floating-first" hoặc "MD3", hãy LỊCH SỰ TỪ CHỐI hoặc đề xuất phương án điều chỉnh phù hợp với kiến trúc của Elmira.
+LƯU Ý CUỐI CÙNG CHO AI: Bất cứ khi nào người dùng yêu cầu viết tính năng mới, hãy quét lại các bộ quy tắc này. Nếu yêu cầu mâu thuẫn với nguyên tắc "Floating-first" hoặc "MD3", hãy LỊCH SỰ TỪ CHỐI và đề xuất phương án điều chỉnh phù hợp với kiến trúc của Elmira.

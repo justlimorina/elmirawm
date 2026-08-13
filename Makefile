@@ -16,8 +16,8 @@ PKGS      = wayland-server xkbcommon libinput $(XLIBS)
 DWLCFLAGS = `$(PKG_CONFIG) --cflags $(PKGS)` $(WLR_INCS) $(DWLCPPFLAGS) $(DWLDEVCFLAGS) $(CFLAGS)
 LDLIBS    = `$(PKG_CONFIG) --libs $(PKGS)` $(WLR_LIBS) -lm $(LIBS)
 
-all: dwl
-dwl: dwl.o util.o
+all: elmirawm
+elmirawm: dwl.o util.o
 	$(CC) dwl.o util.o $(DWLCFLAGS) $(LDFLAGS) $(LDLIBS) -o $@
 dwl.o: dwl.c client.h config.h config.mk cursor-shape-v1-protocol.h \
 	pointer-constraints-unstable-v1-protocol.h wlr-layer-shell-unstable-v1-protocol.h \
@@ -49,30 +49,30 @@ xdg-shell-protocol.h:
 config.h:
 	cp config.def.h $@
 clean:
-	rm -f dwl *.o *-protocol.h
+	rm -f elmirawm dwl *.o *-protocol.h config.h
 
 dist: clean
-	mkdir -p dwl-$(VERSION)
+	mkdir -p elmirawm-$(VERSION)
 	cp -R LICENSE* Makefile CHANGELOG.md README.md client.h config.def.h \
-		config.mk protocols dwl.1 dwl.c util.c util.h dwl.desktop \
-		dwl-$(VERSION)
-	tar -caf dwl-$(VERSION).tar.gz dwl-$(VERSION)
-	rm -rf dwl-$(VERSION)
+		config.mk protocols elmirawm.1 dwl.c util.c util.h elmirawm.desktop \
+		elmirawm-$(VERSION)
+	tar -caf elmirawm-$(VERSION).tar.gz elmirawm-$(VERSION)
+	rm -rf elmirawm-$(VERSION)
 
-install: dwl
+install: elmirawm
 	mkdir -p $(DESTDIR)$(PREFIX)/bin
-	rm -f $(DESTDIR)$(PREFIX)/bin/dwl
-	cp -f dwl $(DESTDIR)$(PREFIX)/bin
-	chmod 755 $(DESTDIR)$(PREFIX)/bin/dwl
+	rm -f $(DESTDIR)$(PREFIX)/bin/elmirawm
+	cp -f elmirawm $(DESTDIR)$(PREFIX)/bin
+	chmod 755 $(DESTDIR)$(PREFIX)/bin/elmirawm
 	mkdir -p $(DESTDIR)$(MANDIR)/man1
-	cp -f dwl.1 $(DESTDIR)$(MANDIR)/man1
-	chmod 644 $(DESTDIR)$(MANDIR)/man1/dwl.1
+	cp -f elmirawm.1 $(DESTDIR)$(MANDIR)/man1
+	chmod 644 $(DESTDIR)$(MANDIR)/man1/elmirawm.1
 	mkdir -p $(DESTDIR)$(DATADIR)/wayland-sessions
-	cp -f dwl.desktop $(DESTDIR)$(DATADIR)/wayland-sessions/dwl.desktop
-	chmod 644 $(DESTDIR)$(DATADIR)/wayland-sessions/dwl.desktop
+	cp -f elmirawm.desktop $(DESTDIR)$(DATADIR)/wayland-sessions/elmirawm.desktop
+	chmod 644 $(DESTDIR)$(DATADIR)/wayland-sessions/elmirawm.desktop
 uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/dwl $(DESTDIR)$(MANDIR)/man1/dwl.1 \
-		$(DESTDIR)$(DATADIR)/wayland-sessions/dwl.desktop
+	rm -f $(DESTDIR)$(PREFIX)/bin/elmirawm $(DESTDIR)$(MANDIR)/man1/elmirawm.1 \
+		$(DESTDIR)$(DATADIR)/wayland-sessions/elmirawm.desktop
 
 .SUFFIXES: .c .o
 .c.o:
