@@ -56,6 +56,7 @@
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
 #include <wlr/types/wlr_virtual_pointer_v1.h>
 #include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/xcursor.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
@@ -134,6 +135,8 @@ typedef struct {
 	struct wl_listener fullscreen;
 	struct wl_listener set_decoration_mode;
 	struct wl_listener destroy_decoration;
+	struct wl_listener request_move;
+	struct wl_listener request_resize;
 #ifdef XWAYLAND
 	struct wl_listener activate;
 	struct wl_listener associate;
@@ -321,6 +324,8 @@ static void powermgrsetmode(struct wl_listener *listener, void *data);
 static void quit(const Arg *arg);
 static void rendermon(struct wl_listener *listener, void *data);
 static void requestdecorationmode(struct wl_listener *listener, void *data);
+static void requestmove(struct wl_listener *listener, void *data);
+static void requestresize(struct wl_listener *listener, void *data);
 static void requeststartdrag(struct wl_listener *listener, void *data);
 static void requestmonstate(struct wl_listener *listener, void *data);
 static void resize(Client *c, struct wlr_box geo, int interact);
@@ -1143,6 +1148,8 @@ createnotify(struct wl_listener *listener, void *data)
 	LISTEN(&toplevel->events.destroy, &c->destroy, destroynotify);
 	LISTEN(&toplevel->events.request_fullscreen, &c->fullscreen, fullscreennotify);
 	LISTEN(&toplevel->events.request_maximize, &c->maximize, maximizenotify);
+	LISTEN(&toplevel->events.request_move, &c->request_move, requestmove);
+	LISTEN(&toplevel->events.request_resize, &c->request_resize, requestresize);
 	LISTEN(&toplevel->events.set_title, &c->set_title, updatetitle);
 }
 
@@ -1341,6 +1348,8 @@ destroynotify(struct wl_listener *listener, void *data)
 	wl_list_remove(&c->destroy.link);
 	wl_list_remove(&c->set_title.link);
 	wl_list_remove(&c->fullscreen.link);
+	wl_list_remove(&c->request_move.link);
+	wl_list_remove(&c->request_resize.link);
 #ifdef XWAYLAND
 	if (c->type != XDGShell) {
 		wl_list_remove(&c->activate.link);
@@ -1818,7 +1827,9 @@ mapnotify(struct wl_listener *listener, void *data)
 			}
 			c->geom.x = cx;
 			c->geom.y = cy;
-			resize(c, c->geom, 1);
+			wlr_scene_node_set_position(&c->scene->node, c->geom.x, c->geom.y);
+			if (c->geom.width > 100 && c->geom.height > 100)
+				resize(c, c->geom, 0);
 		}
 	}
 
@@ -2008,6 +2019,32 @@ moveresize(const Arg *arg)
 		wlr_cursor_set_xcursor(cursor, cursor_mgr, "se-resize");
 		break;
 	}
+}
+
+void
+requestmove(struct wl_listener *listener, void *data)
+{
+	Client *c = wl_container_of(listener, c, request_move);
+	if (!c || client_is_unmanaged(c) || c->isfullscreen)
+		return;
+	grabc = c;
+	setfloating(grabc, 1);
+	cursor_mode = CurMove;
+	grabcx = (int)round(cursor->x) - grabc->geom.x;
+	grabcy = (int)round(cursor->y) - grabc->geom.y;
+	wlr_cursor_set_xcursor(cursor, cursor_mgr, "all-scroll");
+}
+
+void
+requestresize(struct wl_listener *listener, void *data)
+{
+	Client *c = wl_container_of(listener, c, request_resize);
+	if (!c || client_is_unmanaged(c) || c->isfullscreen)
+		return;
+	grabc = c;
+	setfloating(grabc, 1);
+	cursor_mode = CurResize;
+	wlr_cursor_set_xcursor(cursor, cursor_mgr, "se-resize");
 }
 
 void
@@ -3170,6 +3207,8 @@ createnotifyx11(struct wl_listener *listener, void *data)
 	LISTEN(&xsurface->events.request_activate, &c->activate, activatex11);
 	LISTEN(&xsurface->events.request_configure, &c->configure, configurex11);
 	LISTEN(&xsurface->events.request_fullscreen, &c->fullscreen, fullscreennotify);
+	LISTEN(&xsurface->events.request_move, &c->request_move, requestmove);
+	LISTEN(&xsurface->events.request_resize, &c->request_resize, requestresize);
 	LISTEN(&xsurface->events.set_hints, &c->set_hints, sethints);
 	LISTEN(&xsurface->events.set_title, &c->set_title, updatetitle);
 }
@@ -3208,8 +3247,7 @@ xwaylandready(struct wl_listener *listener, void *data)
 	/* Set the default XWayland cursor to match the rest of dwl. */
 	if ((xcursor = wlr_xcursor_manager_get_xcursor(cursor_mgr, "default", 1)))
 		wlr_xwayland_set_cursor(xwayland,
-				xcursor->images[0]->buffer, xcursor->images[0]->width * 4,
-				xcursor->images[0]->width, xcursor->images[0]->height,
+				wlr_xcursor_image_get_buffer(xcursor->images[0]),
 				xcursor->images[0]->hotspot_x, xcursor->images[0]->hotspot_y);
 }
 #endif
