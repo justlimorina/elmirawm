@@ -146,7 +146,7 @@ typedef struct {
 #endif
 	unsigned int bw;
 	uint32_t tags;
-	int isfloating, isurgent, isfullscreen;
+	int isfloating, isurgent, isfullscreen, ismaximized;
 	uint32_t resize; /* configure serial of a pending resize */
 } Client;
 
@@ -308,6 +308,8 @@ static void killclient(const Arg *arg);
 static void locksession(struct wl_listener *listener, void *data);
 static void mapnotify(struct wl_listener *listener, void *data);
 static void maximizenotify(struct wl_listener *listener, void *data);
+static void setmaximized(Client *c, int maximized);
+static void togglemaximize(const Arg *arg);
 static void monocle(Monitor *m);
 static void motionabsolute(struct wl_listener *listener, void *data);
 static void motionnotify(uint32_t time, struct wlr_input_device *device, double sx,
@@ -885,7 +887,8 @@ commitnotify(struct wl_listener *listener, void *data)
 		setmon(c, NULL, 0); /* Make sure to reapply rules in mapnotify() */
 
 		wlr_xdg_toplevel_set_wm_capabilities(c->surface.xdg->toplevel,
-				WLR_XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN);
+				WLR_XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN
+				| WLR_XDG_TOPLEVEL_WM_CAPABILITIES_MAXIMIZE);
 		if (c->decoration)
 			requestdecorationmode(&c->set_decoration_mode, c->decoration);
 		wlr_xdg_toplevel_set_size(c->surface.xdg->toplevel, 0, 0);
@@ -1848,17 +1851,10 @@ maximizenotify(struct wl_listener *listener, void *data)
 {
 	/* This event is raised when a client would like to maximize itself,
 	 * typically because the user clicked on the maximize button on
-	 * client-side decorations. dwl doesn't support maximization, but
-	 * to conform to xdg-shell protocol we still must send a configure.
-	 * Since xdg-shell protocol v5 we should ignore request of unsupported
-	 * capabilities, just schedule a empty configure when the client uses <5
-	 * protocol version
-	 * wlr_xdg_surface_schedule_configure() is used to send an empty reply. */
+	 * client-side decorations. */
 	Client *c = wl_container_of(listener, c, maximize);
-	if (c->surface.xdg->initialized
-			&& wl_resource_get_version(c->surface.xdg->toplevel->resource)
-					< XDG_TOPLEVEL_WM_CAPABILITIES_SINCE_VERSION)
-		wlr_xdg_surface_schedule_configure(c->surface.xdg);
+	if (c->surface.xdg->initialized)
+		setmaximized(c, !c->ismaximized);
 }
 
 void
@@ -2424,6 +2420,9 @@ setfullscreen(Client *c, int fullscreen)
 			? LyrFS : c->isfloating ? LyrFloat : LyrTile]);
 
 	if (fullscreen) {
+		/* Clear maximize state when going fullscreen */
+		c->ismaximized = 0;
+		wlr_xdg_toplevel_set_maximized(c->surface.xdg->toplevel, 0);
 		c->prev = c->geom;
 		resize(c, c->mon->m, 0);
 	} else {
@@ -2433,6 +2432,37 @@ setfullscreen(Client *c, int fullscreen)
 	}
 	arrange(c->mon);
 	printstatus();
+}
+
+void
+setmaximized(Client *c, int maximized)
+{
+	if (!c || !c->mon || !client_surface(c)->mapped)
+		return;
+
+	if (maximized && !c->ismaximized) {
+		/* Save current geometry before maximizing */
+		c->prev = c->geom;
+		c->ismaximized = 1;
+		/* Maximize to the usable work area (respects layer-shell panels) */
+		resize(c, c->mon->w, 0);
+	} else if (!maximized && c->ismaximized) {
+		c->ismaximized = 0;
+		/* Restore previous geometry */
+		resize(c, c->prev, 0);
+	}
+
+	wlr_xdg_toplevel_set_maximized(c->surface.xdg->toplevel, c->ismaximized);
+	arrange(c->mon);
+	printstatus();
+}
+
+void
+togglemaximize(const Arg *arg)
+{
+	Client *sel = focustop(selmon);
+	if (sel)
+		setmaximized(sel, !sel->ismaximized);
 }
 
 void
