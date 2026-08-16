@@ -71,6 +71,7 @@
 #endif
 
 #include "util.h"
+#include "config_loader.h"
 #include "xdg-shell-protocol.h"
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 #include "wlr-output-power-management-unstable-v1-protocol.h"
@@ -343,6 +344,10 @@ static void setpsel(struct wl_listener *listener, void *data);
 static void setsel(struct wl_listener *listener, void *data);
 static void setup(void);
 static void spawn(const Arg *arg);
+static void spawncmd(const char *cmd);
+static void spawnterm(const Arg *arg);
+static void spawnlauncher(const Arg *arg);
+static void reloadconfig(const Arg *arg);
 static void startdrag(struct wl_listener *listener, void *data);
 static void tag(const Arg *arg);
 static void tagmon(const Arg *arg);
@@ -737,6 +742,7 @@ cleanup(void)
 	/* Destroy after the wayland display (when the monitors are already destroyed)
 	   to avoid destroying them with an invalid scene output. */
 	wlr_scene_node_destroy(&scene->tree.node);
+	free_config();
 }
 
 void
@@ -1585,6 +1591,8 @@ handlesig(int signo)
 		while (waitpid(-1, NULL, WNOHANG) > 0);
 	else if (signo == SIGINT || signo == SIGTERM)
 		quit(NULL);
+	else if (signo == SIGHUP)
+		reloadconfig(NULL);
 }
 
 void
@@ -2312,6 +2320,12 @@ run(char *startup_cmd)
 	if (!wlr_backend_start(backend))
 		die("startup: backend_start");
 
+	/* Run autostart commands configured in TOML config */
+	for (int i = 0; i < g_config.autostart_count; i++) {
+		if (g_config.autostart_cmds[i] && strlen(g_config.autostart_cmds[i]) > 0)
+			spawncmd(g_config.autostart_cmds[i]);
+	}
+
 	/* Now that the socket exists and the backend is started, run the startup command */
 	if (startup_cmd) {
 		int piperw[2];
@@ -2542,9 +2556,11 @@ setsel(struct wl_listener *listener, void *data)
 void
 setup(void)
 {
-	int drm_fd, i, sig[] = {SIGCHLD, SIGINT, SIGTERM, SIGPIPE};
+	int drm_fd, i, sig[] = {SIGCHLD, SIGINT, SIGTERM, SIGPIPE, SIGHUP};
 	struct sigaction sa = {.sa_flags = SA_RESTART, .sa_handler = handlesig};
 	sigemptyset(&sa.sa_mask);
+
+	load_config();
 
 	for (i = 0; i < (int)LENGTH(sig); i++)
 		sigaction(sig[i], &sa, NULL);
@@ -2773,6 +2789,45 @@ spawn(const Arg *arg)
 		execvp(((char **)arg->v)[0], (char **)arg->v);
 		die("elmirawm: execvp %s failed:", ((char **)arg->v)[0]);
 	}
+}
+
+void
+spawncmd(const char *cmd)
+{
+	if (!cmd || strlen(cmd) == 0)
+		return;
+	if (fork() == 0) {
+		dup2(STDERR_FILENO, STDOUT_FILENO);
+		setsid();
+		execl("/bin/sh", "/bin/sh", "-c", cmd, (char *)NULL);
+		_exit(EXIT_FAILURE);
+	}
+}
+
+void
+spawnterm(const Arg *arg)
+{
+	if (g_config.terminal && strlen(g_config.terminal) > 0)
+		spawncmd(g_config.terminal);
+	else
+		spawn(arg);
+}
+
+void
+spawnlauncher(const Arg *arg)
+{
+	if (g_config.launcher && strlen(g_config.launcher) > 0)
+		spawncmd(g_config.launcher);
+	else
+		spawn(arg);
+}
+
+void
+reloadconfig(const Arg *arg)
+{
+	wlr_log(WLR_INFO, "Reloading TOML configuration...");
+	free_config();
+	load_config();
 }
 
 void

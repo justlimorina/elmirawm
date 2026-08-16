@@ -1,0 +1,69 @@
+# Elmira Window Manager Configuration File
+# Location: ~/.config/elmirawm/config.toml
+
+[general]
+# Default terminal emulator to launch with Mod+Shift+Return
+terminal = "ptyxis"
+
+# Default application launcher (triggered by Super key tap or Context Menu)
+launcher = "fuzzel"
+
+[theme]
+# Outer rounded corner radius (in pixels)
+border_radius = 16
+
+# Outer border width (in pixels)
+border_width = 3
+
+# Active window border color (Hex format)
+active_border = "#D0BCFF"
+
+# Inactive window border color (Hex format)
+inactive_border = "#49454F"
+
+[autostart]
+# List of commands to execute automatically upon login
+exec = [
+    "fcitx5 -d",
+    # "swaybg -i ~/.wallpapers/default.jpg",
+    # "waybar"
+]
+
+# [shell]
+# Accompanying desktop shell (e.g. Aura Shell) - RESERVED FOR FUTURE DEVELOPMENT
+# command = "elmira-shell"
+# enable = false
+
+# Optional Custom Context Menu Items (overrides default right-click menu)
+# [[menu.item]]
+# label = "Terminal"
+# cmd = "konsole" # or "kitty" or "alacritty" or "wezterm" or anything else.
+
+# [[menu.item]]
+# label = "Files"
+# cmd = "nautilus" # or "pcmanfm" or "dolphin" or anything else.
+
+# [[menu.item]]
+# label = "Browser"
+# cmd = "google-chrome" # or "firefox" ("firefox-esr" for Debian stable) or "brave-browser" or "elinks" or anything else.
+
+# [[menu.item]]
+# type = "separator"
+
+# [[menu.item]]
+# label = "Applications"
+# cmd = "fuzzel"
+
+# [[menu.item]]
+# type = "separator"
+
+# [[menu.item]]
+# label = "Reload Config"
+# action = "reload"
+
+# [[menu.item]]
+# label = "Exit Elmira"
+# action = "quit"
+
+
+
