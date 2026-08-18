@@ -56,6 +56,7 @@
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
 #include <wlr/types/wlr_virtual_pointer_v1.h>
 #include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/xcursor.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
@@ -157,10 +158,18 @@ typedef struct {
 	struct wl_listener configure;
 	struct wl_listener set_hints;
 #endif
+	struct wl_listener foreign_activate;
+	struct wl_listener foreign_fullscreen;
+	struct wl_listener foreign_close;
+	struct wl_listener foreign_maximize;
+	struct wl_listener foreign_minimize;
 	unsigned int bw;
 	uint32_t tags;
 	int isfloating, isurgent, isfullscreen, ismaximized;
+	int isscratchpad; /* 1 if this client is on the scratchpad */
+	struct wlr_box prev_scratchpad; /* geometry before hiding to scratchpad */
 	uint32_t resize; /* configure serial of a pending resize */
+	struct wlr_foreign_toplevel_handle_v1 *foreign_toplevel;
 } Client;
 
 typedef struct {
@@ -368,6 +377,15 @@ static void togglefloating(const Arg *arg);
 static void togglefullscreen(const Arg *arg);
 static void toggletag(const Arg *arg);
 static void toggleview(const Arg *arg);
+static void togglescratchpad(const Arg *arg);
+static void movetoscratchpad(const Arg *arg);
+static void foreign_toplevel_handle_request_maximize(struct wl_listener *listener, void *data);
+static void foreign_toplevel_handle_request_fullscreen(struct wl_listener *listener, void *data);
+static void foreign_toplevel_handle_request_minimize(struct wl_listener *listener, void *data);
+static void foreign_toplevel_handle_request_activate(struct wl_listener *listener, void *data);
+static void foreign_toplevel_handle_request_close(struct wl_listener *listener, void *data);
+static void create_foreign_toplevel(Client *c);
+static void update_foreign_toplevel(Client *c);
 static void unlocksession(struct wl_listener *listener, void *data);
 static void unmaplayersurfacenotify(struct wl_listener *listener, void *data);
 static void unmapnotify(struct wl_listener *listener, void *data);
@@ -416,6 +434,8 @@ static struct wlr_output_power_manager_v1 *power_mgr;
 static struct wlr_pointer_constraints_v1 *pointer_constraints;
 static struct wlr_relative_pointer_manager_v1 *relative_pointer_mgr;
 static struct wlr_pointer_constraint_v1 *active_constraint;
+
+static struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel_mgr;
 
 static struct wlr_cursor *cursor;
 static struct wlr_xcursor_manager *cursor_mgr;
@@ -878,6 +898,135 @@ update_snap_preview(SnapState state, Monitor *m)
 	}
 	wlr_scene_node_set_position(&snap_preview_rect->node, box.x, box.y);
 	wlr_scene_node_raise_to_top(&snap_preview_rect->node);
+}
+
+static void
+foreign_toplevel_handle_request_maximize(struct wl_listener *listener, void *data)
+{
+	Client *c = wl_container_of(listener, c, foreign_maximize);
+	struct wlr_foreign_toplevel_handle_v1_maximized_event *event = data;
+	setmaximized(c, event->maximized);
+}
+
+static void
+foreign_toplevel_handle_request_fullscreen(struct wl_listener *listener, void *data)
+{
+	Client *c = wl_container_of(listener, c, foreign_fullscreen);
+	struct wlr_foreign_toplevel_handle_v1_fullscreen_event *event = data;
+	setfullscreen(c, event->fullscreen);
+}
+
+static void
+foreign_toplevel_handle_request_minimize(struct wl_listener *listener, void *data)
+{
+	Client *c = wl_container_of(listener, c, foreign_minimize);
+	struct wlr_foreign_toplevel_handle_v1_minimized_event *event = data;
+	if (event->minimized)
+		movetoscratchpad(NULL);
+	else
+		togglescratchpad(NULL);
+}
+
+static void
+foreign_toplevel_handle_request_activate(struct wl_listener *listener, void *data)
+{
+	Client *c = wl_container_of(listener, c, foreign_activate);
+	focusclient(c, 1);
+}
+
+static void
+foreign_toplevel_handle_request_close(struct wl_listener *listener, void *data)
+{
+	Client *c = wl_container_of(listener, c, foreign_close);
+	if (c && c->type == XDGShell && c->surface.xdg->toplevel)
+		wlr_xdg_toplevel_send_close(c->surface.xdg->toplevel);
+}
+
+static void
+create_foreign_toplevel(Client *c)
+{
+	if (!c || client_is_unmanaged(c) || c->foreign_toplevel)
+		return;
+
+	c->foreign_toplevel = wlr_foreign_toplevel_handle_v1_create(foreign_toplevel_mgr);
+	if (!c->foreign_toplevel)
+		return;
+
+	c->foreign_activate.notify = foreign_toplevel_handle_request_activate;
+	wl_signal_add(&c->foreign_toplevel->events.request_activate, &c->foreign_activate);
+
+	c->foreign_fullscreen.notify = foreign_toplevel_handle_request_fullscreen;
+	wl_signal_add(&c->foreign_toplevel->events.request_fullscreen, &c->foreign_fullscreen);
+
+	c->foreign_close.notify = foreign_toplevel_handle_request_close;
+	wl_signal_add(&c->foreign_toplevel->events.request_close, &c->foreign_close);
+
+	c->foreign_maximize.notify = foreign_toplevel_handle_request_maximize;
+	wl_signal_add(&c->foreign_toplevel->events.request_maximize, &c->foreign_maximize);
+
+	c->foreign_minimize.notify = foreign_toplevel_handle_request_minimize;
+	wl_signal_add(&c->foreign_toplevel->events.request_minimize, &c->foreign_minimize);
+
+	wlr_foreign_toplevel_handle_v1_set_title(c->foreign_toplevel, client_get_title(c));
+	wlr_foreign_toplevel_handle_v1_set_app_id(c->foreign_toplevel, client_get_appid(c));
+
+	if (c->mon && c->mon->wlr_output)
+		wlr_foreign_toplevel_handle_v1_output_enter(c->foreign_toplevel, c->mon->wlr_output);
+
+	wlr_foreign_toplevel_handle_v1_set_maximized(c->foreign_toplevel, c->ismaximized);
+	wlr_foreign_toplevel_handle_v1_set_fullscreen(c->foreign_toplevel, c->isfullscreen);
+	wlr_foreign_toplevel_handle_v1_set_activated(c->foreign_toplevel, c == focustop(selmon));
+}
+
+static void
+update_foreign_toplevel(Client *c)
+{
+	if (!c || !c->foreign_toplevel)
+		return;
+
+	wlr_foreign_toplevel_handle_v1_set_title(c->foreign_toplevel, client_get_title(c));
+	wlr_foreign_toplevel_handle_v1_set_app_id(c->foreign_toplevel, client_get_appid(c));
+	wlr_foreign_toplevel_handle_v1_set_maximized(c->foreign_toplevel, c->ismaximized);
+	wlr_foreign_toplevel_handle_v1_set_fullscreen(c->foreign_toplevel, c->isfullscreen);
+	wlr_foreign_toplevel_handle_v1_set_minimized(c->foreign_toplevel, c->isscratchpad);
+	wlr_foreign_toplevel_handle_v1_set_activated(c->foreign_toplevel, c == focustop(selmon));
+}
+
+static void
+movetoscratchpad(const Arg *arg)
+{
+	Client *c = focustop(selmon);
+	if (!c || c->isscratchpad)
+		return;
+
+	c->isscratchpad = 1;
+	c->prev_scratchpad = c->geom;
+
+	/* Hide the client scene node */
+	wlr_scene_node_set_enabled(&c->scene->node, false);
+
+	/* Focus next client on workspace */
+	focusclient(focustop(selmon), 1);
+	update_foreign_toplevel(c);
+	printstatus();
+}
+
+static void
+togglescratchpad(const Arg *arg)
+{
+	Client *c;
+	wl_list_for_each(c, &clients, link) {
+		if (c->isscratchpad) {
+			c->isscratchpad = 0;
+			wlr_scene_node_set_enabled(&c->scene->node, true);
+			if (c->prev_scratchpad.width > 0 && c->prev_scratchpad.height > 0)
+				resize(c, c->prev_scratchpad, 0);
+			focusclient(c, 1);
+			update_foreign_toplevel(c);
+			printstatus();
+			return;
+		}
+	}
 }
 
 void
@@ -1771,6 +1920,7 @@ focusclient(Client *c, int lift)
 			client_set_border_color(c, focuscolor);
 			update_client_decorations(c);
 		}
+		update_foreign_toplevel(c);
 	}
 
 	/* Deactivate old client if focus is changing */
@@ -2158,6 +2308,7 @@ mapnotify(struct wl_listener *listener, void *data)
 	}
 
 	update_client_decorations(c);
+	create_foreign_toplevel(c);
 	printstatus();
 
 unset_fullscreen:
@@ -2771,6 +2922,7 @@ setfullscreen(Client *c, int fullscreen)
 		resize(c, c->prev, 0);
 	}
 	arrange(c->mon);
+	update_foreign_toplevel(c);
 	printstatus();
 }
 
@@ -2794,6 +2946,7 @@ setmaximized(Client *c, int maximized)
 
 	wlr_xdg_toplevel_set_maximized(c->surface.xdg->toplevel, c->ismaximized);
 	arrange(c->mon);
+	update_foreign_toplevel(c);
 	printstatus();
 }
 
@@ -3006,6 +3159,8 @@ setup(void)
 
 	idle_inhibit_mgr = wlr_idle_inhibit_v1_create(dpy);
 	wl_signal_add(&idle_inhibit_mgr->events.new_inhibitor, &new_idle_inhibitor);
+
+	foreign_toplevel_mgr = wlr_foreign_toplevel_manager_v1_create(dpy);
 
 	session_lock_mgr = wlr_session_lock_manager_v1_create(dpy);
 	wl_signal_add(&session_lock_mgr->events.new_lock, &new_session_lock);
@@ -3310,6 +3465,11 @@ unmapnotify(struct wl_listener *listener, void *data)
 		wl_list_remove(&c->flink);
 	}
 
+	if (c->foreign_toplevel) {
+		wlr_foreign_toplevel_handle_v1_destroy(c->foreign_toplevel);
+		c->foreign_toplevel = NULL;
+	}
+
 	wlr_scene_node_destroy(&c->scene->node);
 	printstatus();
 	motionnotify(0, NULL, 0, 0, 0, 0);
@@ -3425,6 +3585,7 @@ void
 updatetitle(struct wl_listener *listener, void *data)
 {
 	Client *c = wl_container_of(listener, c, set_title);
+	update_foreign_toplevel(c);
 	if (c == focustop(c->mon))
 		printstatus();
 }
