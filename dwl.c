@@ -72,6 +72,16 @@
 
 #include "util.h"
 #include "config_loader.h"
+#include "render_titlebar.h"
+#include "render_menu.h"
+
+#ifndef BTN_LEFT
+#define BTN_LEFT 0x110
+#endif
+#ifndef BTN_RIGHT
+#define BTN_RIGHT 0x111
+#endif
+
 #include "xdg-shell-protocol.h"
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 #include "wlr-output-power-management-unstable-v1-protocol.h"
@@ -116,6 +126,8 @@ typedef struct {
 	Monitor *mon;
 	struct wlr_scene_tree *scene;
 	struct wlr_scene_rect *border[4]; /* top, bottom, left, right */
+	struct wlr_scene_buffer *shadow_buf;
+	struct wlr_scene_buffer *border_buf;
 	struct wlr_scene_tree *scene_surface;
 	struct wl_list link;
 	struct wl_list flink;
@@ -639,6 +651,235 @@ axisnotify(struct wl_listener *listener, void *data)
 			event->delta_discrete, event->source, event->relative_direction);
 }
 
+typedef enum {
+	SNAP_NONE = 0,
+	SNAP_LEFT,
+	SNAP_RIGHT,
+	SNAP_TOP_LEFT,
+	SNAP_TOP_RIGHT,
+	SNAP_BOTTOM_LEFT,
+	SNAP_BOTTOM_RIGHT,
+	SNAP_MAXIMIZE
+} SnapState;
+
+static SnapState current_snap = SNAP_NONE;
+static struct wlr_scene_rect *snap_preview_rect = NULL;
+
+static struct wlr_scene_buffer *menu_scene_buf = NULL;
+static int menu_visible = 0;
+static int menu_x = 0, menu_y = 0;
+static int menu_hover_index = -1;
+
+static void
+update_client_decorations(Client *c)
+{
+	int w, h, active, bw;
+	double radius;
+	const float *col;
+	struct wlr_buffer *sbuf;
+	struct wlr_buffer *bbuf;
+
+	if (!c || !c->scene || client_is_unmanaged(c) || c->isfullscreen) {
+		if (c && c->shadow_buf)
+			wlr_scene_node_set_enabled(&c->shadow_buf->node, false);
+		if (c && c->border_buf)
+			wlr_scene_node_set_enabled(&c->border_buf->node, false);
+		return;
+	}
+
+	w = c->geom.width;
+	h = c->geom.height;
+	if (w <= 0 || h <= 0)
+		return;
+
+	active = (c == focustop(selmon));
+	col = active ? g_config.active_border_color : g_config.inactive_border_color;
+	if (c->isurgent)
+		col = urgentcolor;
+
+	bw = g_config.border_width > 0 ? (int)g_config.border_width : (c->bw > 0 ? (int)c->bw : 2);
+	radius = (double)g_config.border_radius;
+
+	/* 1. Multi-layer ambient drop shadow buffer */
+	sbuf = render_shadow_buffer(w, h, active);
+	if (sbuf) {
+		if (!c->shadow_buf) {
+			c->shadow_buf = wlr_scene_buffer_create(c->scene, sbuf);
+			if (c->shadow_buf)
+				c->shadow_buf->node.data = c;
+		} else {
+			wlr_scene_buffer_set_buffer(c->shadow_buf, sbuf);
+			wlr_scene_node_set_enabled(&c->shadow_buf->node, true);
+		}
+		wlr_buffer_drop(sbuf);
+		if (c->shadow_buf) {
+			wlr_scene_node_set_position(&c->shadow_buf->node, -16, -16);
+			wlr_scene_node_lower_to_bottom(&c->shadow_buf->node);
+		}
+	}
+
+	/* 2. Vector rounded outer border buffer */
+	bbuf = render_border_buffer(w, h, bw, col, radius);
+	if (bbuf) {
+		if (!c->border_buf) {
+			c->border_buf = wlr_scene_buffer_create(c->scene, bbuf);
+			if (c->border_buf)
+				c->border_buf->node.data = c;
+		} else {
+			wlr_scene_buffer_set_buffer(c->border_buf, bbuf);
+			wlr_scene_node_set_enabled(&c->border_buf->node, true);
+		}
+		wlr_buffer_drop(bbuf);
+		if (c->border_buf) {
+			wlr_scene_node_set_position(&c->border_buf->node, 0, 0);
+			wlr_scene_node_raise_to_top(&c->border_buf->node);
+		}
+	}
+}
+
+static void
+hide_desktop_menu(void)
+{
+	if (menu_scene_buf)
+		wlr_scene_node_set_enabled(&menu_scene_buf->node, false);
+	menu_visible = 0;
+	menu_hover_index = -1;
+}
+
+static void
+show_desktop_menu(int x, int y)
+{
+	struct wlr_buffer *buf = render_menu_buffer(-1);
+	if (!buf)
+		return;
+
+	if (!menu_scene_buf) {
+		menu_scene_buf = wlr_scene_buffer_create(layers[LyrBlock], buf);
+	} else {
+		wlr_scene_buffer_set_buffer(menu_scene_buf, buf);
+		wlr_scene_node_set_enabled(&menu_scene_buf->node, true);
+	}
+	wlr_buffer_drop(buf);
+
+	menu_x = x;
+	menu_y = y;
+	if (selmon) {
+		int menu_h = get_menu_height();
+		if (menu_x + MENU_WIDTH > selmon->w.x + selmon->w.width)
+			menu_x = selmon->w.x + selmon->w.width - MENU_WIDTH;
+		if (menu_y + menu_h > selmon->w.y + selmon->w.height)
+			menu_y = selmon->w.y + selmon->w.height - menu_h;
+	}
+
+	wlr_scene_node_set_position(&menu_scene_buf->node, menu_x, menu_y);
+	wlr_scene_node_raise_to_top(&menu_scene_buf->node);
+	menu_visible = 1;
+	menu_hover_index = -1;
+}
+
+static void
+update_desktop_menu_hover(int hover_idx)
+{
+	struct wlr_buffer *buf;
+	if (!menu_visible || hover_idx == menu_hover_index)
+		return;
+
+	menu_hover_index = hover_idx;
+	buf = render_menu_buffer(hover_idx);
+	if (buf) {
+		wlr_scene_buffer_set_buffer(menu_scene_buf, buf);
+		wlr_buffer_drop(buf);
+	}
+}
+
+static SnapState
+detect_snap(double cx, double cy, Monitor *m)
+{
+	int margin, left, right, top, bottom;
+	if (!m)
+		return SNAP_NONE;
+
+	margin = 16;
+	left = (cx <= m->w.x + margin);
+	right = (cx >= m->w.x + m->w.width - margin);
+	top = (cy <= m->w.y + margin);
+	bottom = (cy >= m->w.y + m->w.height - margin);
+
+	if (top && left) return SNAP_TOP_LEFT;
+	if (top && right) return SNAP_TOP_RIGHT;
+	if (bottom && left) return SNAP_BOTTOM_LEFT;
+	if (bottom && right) return SNAP_BOTTOM_RIGHT;
+	if (left) return SNAP_LEFT;
+	if (right) return SNAP_RIGHT;
+	if (top) return SNAP_MAXIMIZE;
+
+	return SNAP_NONE;
+}
+
+static void
+update_snap_preview(SnapState state, Monitor *m)
+{
+	struct wlr_box box;
+	int hw, hh;
+	float preview_color[4] = {0.82f, 0.74f, 1.0f, 0.25f};
+
+	if (state == SNAP_NONE || !m) {
+		if (snap_preview_rect)
+			wlr_scene_node_set_enabled(&snap_preview_rect->node, false);
+		current_snap = SNAP_NONE;
+		return;
+	}
+
+	current_snap = state;
+	box = m->w;
+	hw = m->w.width / 2;
+	hh = m->w.height / 2;
+
+	switch (state) {
+	case SNAP_LEFT:
+		box.width = hw;
+		break;
+	case SNAP_RIGHT:
+		box.x += hw;
+		box.width = hw;
+		break;
+	case SNAP_TOP_LEFT:
+		box.width = hw;
+		box.height = hh;
+		break;
+	case SNAP_TOP_RIGHT:
+		box.x += hw;
+		box.width = hw;
+		box.height = hh;
+		break;
+	case SNAP_BOTTOM_LEFT:
+		box.y += hh;
+		box.width = hw;
+		box.height = hh;
+		break;
+	case SNAP_BOTTOM_RIGHT:
+		box.x += hw;
+		box.y += hh;
+		box.width = hw;
+		box.height = hh;
+		break;
+	case SNAP_MAXIMIZE:
+		break;
+	default:
+		break;
+	}
+
+	if (!snap_preview_rect) {
+		snap_preview_rect = wlr_scene_rect_create(layers[LyrBlock], box.width, box.height, preview_color);
+	} else {
+		wlr_scene_rect_set_size(snap_preview_rect, box.width, box.height);
+		wlr_scene_rect_set_color(snap_preview_rect, preview_color);
+		wlr_scene_node_set_enabled(&snap_preview_rect->node, true);
+	}
+	wlr_scene_node_set_position(&snap_preview_rect->node, box.x, box.y);
+	wlr_scene_node_raise_to_top(&snap_preview_rect->node);
+}
+
 void
 buttonpress(struct wl_listener *listener, void *data)
 {
@@ -657,10 +898,52 @@ buttonpress(struct wl_listener *listener, void *data)
 		if (locked)
 			break;
 
+		/* Desktop Context Menu & Window titlebar interaction on button press */
+		if (menu_visible) {
+			int item = get_menu_item_at((int)round(cursor->x) - menu_x, (int)round(cursor->y) - menu_y);
+			if (event->button == BTN_LEFT) {
+				hide_desktop_menu();
+				if (item >= 0 && item < g_config.menu_item_count) {
+					MenuItem *mi = &g_config.menu_items[item];
+					if (mi->cmd) {
+						spawncmd(mi->cmd);
+					} else if (mi->action) {
+						if (strcmp(mi->action, "reload") == 0)
+							reloadconfig(NULL);
+						else if (strcmp(mi->action, "quit") == 0)
+							quit(NULL);
+					}
+				}
+				return;
+			}
+			hide_desktop_menu();
+		} else if (event->button == BTN_RIGHT) {
+			xytonode(cursor->x, cursor->y, NULL, &c, NULL, NULL, NULL);
+			if (!c) {
+				show_desktop_menu((int)round(cursor->x), (int)round(cursor->y));
+				return;
+			}
+		}
+
 		/* Change focus if the button was _pressed_ over a client */
 		xytonode(cursor->x, cursor->y, NULL, &c, NULL, NULL, NULL);
-		if (c && (!client_is_unmanaged(c) || client_wants_focus(c)))
+		if (c && (!client_is_unmanaged(c) || client_wants_focus(c))) {
 			focusclient(c, 1);
+			/* Titlebar double-click to toggle maximize */
+			if (event->button == BTN_LEFT) {
+				static uint32_t last_click_time = 0;
+				static Client *last_clicked_client = NULL;
+				if ((event->time_msec - last_click_time < 300) && (last_clicked_client == c)
+						&& (cursor->y - c->geom.y <= 32)) {
+					togglemaximize(NULL);
+					last_click_time = 0;
+					last_clicked_client = NULL;
+				} else {
+					last_click_time = event->time_msec;
+					last_clicked_client = c;
+				}
+			}
+		}
 
 		keyboard = wlr_seat_get_keyboard(seat);
 		mods = keyboard ? wlr_keyboard_get_modifiers(keyboard) : 0;
@@ -674,10 +957,35 @@ buttonpress(struct wl_listener *listener, void *data)
 		break;
 	case WL_POINTER_BUTTON_STATE_RELEASED:
 		/* If you released any buttons, we exit interactive move/resize mode. */
-		/* TODO: should reset to the pointer focus's current setcursor */
 		if (!locked && cursor_mode != CurNormal && cursor_mode != CurPressed) {
 			wlr_cursor_set_xcursor(cursor, cursor_mgr, "default");
 			cursor_mode = CurNormal;
+
+			if (grabc && current_snap != SNAP_NONE) {
+				Monitor *m = selmon ? selmon : grabc->mon;
+				if (m) {
+					if (current_snap == SNAP_MAXIMIZE) {
+						if (!grabc->ismaximized)
+							togglemaximize(NULL);
+					} else {
+						struct wlr_box snap_box = m->w;
+						int hw = m->w.width / 2;
+						int hh = m->w.height / 2;
+						switch (current_snap) {
+						case SNAP_LEFT: snap_box.width = hw; break;
+						case SNAP_RIGHT: snap_box.x += hw; snap_box.width = hw; break;
+						case SNAP_TOP_LEFT: snap_box.width = hw; snap_box.height = hh; break;
+						case SNAP_TOP_RIGHT: snap_box.x += hw; snap_box.width = hw; snap_box.height = hh; break;
+						case SNAP_BOTTOM_LEFT: snap_box.y += hh; snap_box.width = hw; snap_box.height = hh; break;
+						case SNAP_BOTTOM_RIGHT: snap_box.x += hw; snap_box.y += hh; snap_box.width = hw; snap_box.height = hh; break;
+						default: break;
+						}
+						resize(grabc, snap_box, 1);
+					}
+				}
+				update_snap_preview(SNAP_NONE, NULL);
+			}
+
 			/* Drop the window off on its new monitor */
 			selmon = xytomon(cursor->x, cursor->y);
 			setmon(grabc, selmon, 0);
@@ -1459,8 +1767,10 @@ focusclient(Client *c, int lift)
 
 		/* Don't change border color if there is an exclusive focus or we are
 		 * handling a drag operation */
-		if (!exclusive_focus && !seat->drag)
+		if (!exclusive_focus && !seat->drag) {
 			client_set_border_color(c, focuscolor);
+			update_client_decorations(c);
+		}
 	}
 
 	/* Deactivate old client if focus is changing */
@@ -1478,6 +1788,7 @@ focusclient(Client *c, int lift)
 		 * and probably other clients */
 		} else if (old_c && !client_is_unmanaged(old_c) && (!c || !client_wants_focus(c))) {
 			client_set_border_color(old_c, bordercolor);
+			update_client_decorations(old_c);
 
 			client_activate_surface(old, 0);
 		}
@@ -1773,6 +2084,8 @@ mapnotify(struct wl_listener *listener, void *data)
 	int i;
 
 	/* Create scene tree for this client and its border */
+	c->shadow_buf = NULL;
+	c->border_buf = NULL;
 	c->scene = client_surface(c)->data = wlr_scene_tree_create(layers[LyrTile]);
 	/* Enabled later by a call to arrange() */
 	wlr_scene_node_set_enabled(&c->scene->node, client_is_unmanaged(c));
@@ -1844,6 +2157,7 @@ mapnotify(struct wl_listener *listener, void *data)
 		}
 	}
 
+	update_client_decorations(c);
 	printstatus();
 
 unset_fullscreen:
@@ -1961,11 +2275,22 @@ motionnotify(uint32_t time, struct wlr_input_device *device, double dx, double d
 	/* Update drag icon's position */
 	wlr_scene_node_set_position(&drag_icon->node, (int)round(cursor->x), (int)round(cursor->y));
 
+	/* Desktop menu hover update */
+	if (menu_visible) {
+		int item_idx = get_menu_item_at((int)round(cursor->x) - menu_x, (int)round(cursor->y) - menu_y);
+		update_desktop_menu_hover(item_idx);
+	}
+
 	/* If we are currently grabbing the mouse, handle and return */
 	if (cursor_mode == CurMove) {
+		SnapState s;
 		/* Move the grabbed client to the new position. */
 		resize(grabc, (struct wlr_box){.x = (int)round(cursor->x) - grabcx, .y = (int)round(cursor->y) - grabcy,
 			.width = grabc->geom.width, .height = grabc->geom.height}, 1);
+
+		/* Snap preview update while moving */
+		s = detect_snap(cursor->x, cursor->y, selmon);
+		update_snap_preview(s, selmon);
 		return;
 	} else if (cursor_mode == CurResize) {
 		resize(grabc, (struct wlr_box){.x = grabc->geom.x, .y = grabc->geom.y,
@@ -2304,6 +2629,7 @@ resize(Client *c, struct wlr_box geo, int interact)
 			c->geom.height - 2 * c->bw);
 	client_get_clip(c, &clip);
 	wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, &clip);
+	update_client_decorations(c);
 }
 
 void
@@ -3178,9 +3504,13 @@ xytonode(double x, double y, struct wlr_surface **psurface,
 		if (!(node = wlr_scene_node_at(&layers[layer]->node, x, y, nx, ny)))
 			continue;
 
-		if (node->type == WLR_SCENE_NODE_BUFFER)
-			surface = wlr_scene_surface_try_from_buffer(
-					wlr_scene_buffer_from_node(node))->surface;
+		if (node->type == WLR_SCENE_NODE_BUFFER) {
+			struct wlr_scene_surface *scene_surface =
+				wlr_scene_surface_try_from_buffer(
+					wlr_scene_buffer_from_node(node));
+			if (scene_surface)
+				surface = scene_surface->surface;
+		}
 		/* Walk the tree to find a node that knows the client */
 		for (pnode = node; pnode && !c; pnode = &pnode->parent->node)
 			c = pnode->data;
